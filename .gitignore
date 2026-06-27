@@ -33,3 +33,7 @@ ENV/
 # IDE files
 .vscode/
 .idea/
+
+# Zip packages
+*.zip
+
