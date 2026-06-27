@@ -170,6 +170,17 @@ class Trainer:
         
         data_iter = iter(self.dataloader)
         
+        # Initialize file-based metrics logger on rank 0
+        metrics_file = None
+        if self.rank == 0:
+            os.makedirs(self.config.train.checkpoint_dir, exist_ok=True)
+            metrics_path = os.path.join(self.config.train.checkpoint_dir, "metrics.csv")
+            write_header = not os.path.exists(metrics_path) or os.path.getsize(metrics_path) == 0
+            metrics_file = open(metrics_path, "a", encoding="utf-8")
+            if write_header:
+                metrics_file.write("step,loss,lr\n")
+                metrics_file.flush()
+        
         # Use tqdm progress bar on rank 0
         from tqdm import tqdm
         pbar = tqdm(
@@ -191,12 +202,20 @@ class Trainer:
             pbar.update(1)
             lr = self.optimizer.param_groups[0]['lr']
             pbar.set_postfix({"loss": f"{loss:.4f}", "lr": f"{lr:.2e}"})
+            
+            # Write metrics to log file
+            if self.rank == 0 and metrics_file is not None:
+                metrics_file.write(f"{self.global_step},{loss:.6f},{lr:.6e}\n")
+                if self.global_step % 10 == 0:
+                    metrics_file.flush()
                 
             # Checkpoint save
             if self.global_step % self.config.train.checkpoint_interval == 0:
                 self.save_checkpoint()
                 
         pbar.close()
+        if metrics_file is not None:
+            metrics_file.close()
 
     def save_checkpoint(self) -> None:
         """Persist training weights and optimizer state to files."""
