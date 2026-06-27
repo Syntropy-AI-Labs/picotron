@@ -214,6 +214,8 @@ class Trainer:
                 self.save_checkpoint()
                 
         pbar.close()
+        # Save one final checkpoint at the end of training
+        self.save_checkpoint()
         if metrics_file is not None:
             metrics_file.close()
 
