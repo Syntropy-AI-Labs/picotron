@@ -53,6 +53,10 @@ class ModelConfig:
     alternate_sliding_window: bool = False  # Interleave sliding window attention blocks
     scale_embeddings: bool = False  # Scale input embeddings by sqrt(hidden_size)
     activation_type: str = "silu"  # "silu" (SwiGLU) or "gelu" (GeGLU)
+    
+    # Qwen 3.5 Gated DeltaNet additions
+    use_deltanet: bool = False  # Enable hybrid Attention + Gated DeltaNet architecture
+    deltanet_ratio: int = 3  # Ratio of DeltaNet layers to standard Attention layers (e.g. 3:1)
 
 @dataclass
 class ParallelConfig:
