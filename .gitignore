@@ -37,3 +37,7 @@ ENV/
 # Zip packages
 *.zip
 
+# Scratch scripts
+scratch/
+
+
