@@ -9,7 +9,7 @@ import torch.nn as nn
 from typing import Optional
 
 from picotron.config import ModelConfig
-from picotron.nn.norm import RMSNorm
+from picotron.nn.norm import get_norm
 from picotron.nn.rope import RotaryEmbedding
 from picotron.nn.block import TransformerBlock
 
@@ -40,17 +40,17 @@ class LLaMAModel(nn.Module):
             scaling_factor=config.rope_scaling_factor
         )
 
-        # Decoder blocks
+        # Decoder blocks with layer index propagation
         self.layers = nn.ModuleList([
-            TransformerBlock(config=config)
-            for _ in range(config.num_hidden_layers)
+            TransformerBlock(config=config, layer_idx=i)
+            for i in range(config.num_hidden_layers)
         ])
 
-        # Final pre-head RMSNorm
-        self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        # Final pre-head Normalization (RMSNorm or LayerNorm)
+        self.norm = get_norm(config.hidden_size, norm_type=config.norm_type, eps=config.rms_norm_eps)
 
-        # Language Model Head (tied/untied option)
-        self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+        # Language Model Head (tied/untied option with customizable bias)
+        self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=config.bias)
         if config.tie_word_embeddings:
             self.lm_head.weight = self.embed_tokens.weight
 
@@ -70,6 +70,10 @@ class LLaMAModel(nn.Module):
         """Forward pass through LLaMA decoder."""
         _, seq_len = input_ids.shape
         hidden_states = self.embed_tokens(input_ids)
+        
+        # Scale inputs (for Gemma support)
+        if self.config.scale_embeddings:
+            hidden_states = hidden_states * math.sqrt(self.config.hidden_size)
 
         # Precompute rotary cos and sin slices for current seq_len
         cos, sin = self.rotary_emb(hidden_states, seq_len)

@@ -6,7 +6,7 @@ Supports pre-norm, GQA/MLA attention, SwiGLU or MoE FFN, and parallel execution 
 import torch
 import torch.nn as nn
 from picotron.config import ModelConfig
-from picotron.nn.norm import RMSNorm
+from picotron.nn.norm import get_norm
 from picotron.nn.attention import Attention
 from picotron.nn.mlp import MLP, MoE
 
@@ -14,13 +14,14 @@ class TransformerBlock(nn.Module):
     """
     Highly configurable Transformer Block.
     """
-    def __init__(self, config: ModelConfig):
+    def __init__(self, config: ModelConfig, layer_idx: int = 0):
         """Initialize block normalization, attention, and FFN modules from config."""
         super().__init__()
         self.config = config
         self.parallel_attn_ffn = config.parallel_attn_ffn
+        self.layer_idx = layer_idx
         
-        self.input_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.input_layernorm = get_norm(config.hidden_size, norm_type=config.norm_type, eps=config.rms_norm_eps)
         
         # 1. Attention Module
         num_kv = config.num_key_value_heads if config.num_key_value_heads is not None else config.num_attention_heads
@@ -36,6 +37,10 @@ class TransformerBlock(nn.Module):
             sliding_window=config.sliding_window,
             logit_soft_cap=config.logit_soft_cap,
             rms_norm_eps=config.rms_norm_eps,
+            bias=config.bias,
+            norm_type=config.norm_type,
+            layer_idx=layer_idx,
+            alternate_sliding_window=config.alternate_sliding_window,
         )
         
         # Calculate intermediate dimension
@@ -51,14 +56,21 @@ class TransformerBlock(nn.Module):
                 hidden_size=config.hidden_size,
                 intermediate_size=intermediate_size,
                 num_experts=config.moe_num_experts,
-                top_k=config.moe_top_k
+                top_k=config.moe_top_k,
+                activation_type=config.activation_type,
+                bias=config.bias
             )
         else:
-            self.mlp = MLP(hidden_size=config.hidden_size, intermediate_size=intermediate_size)
+            self.mlp = MLP(
+                hidden_size=config.hidden_size,
+                intermediate_size=intermediate_size,
+                activation_type=config.activation_type,
+                bias=config.bias
+            )
             
         # Post-attn norm is only required/used if parallel attention and FFN is disabled
         if not self.parallel_attn_ffn:
-            self.post_attention_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+            self.post_attention_layernorm = get_norm(config.hidden_size, norm_type=config.norm_type, eps=config.rms_norm_eps)
 
     def forward(
         self,

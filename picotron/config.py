@@ -46,6 +46,13 @@ class ModelConfig:
     
     # Soft capping of logits (Gemma 2 style)
     logit_soft_cap: Optional[float] = None
+    
+    # Gemma, StarCoder, GLM & OLMo additions
+    bias: bool = False  # Toggle bias on all linear layers
+    norm_type: str = "rms"  # "rms" (RMSNorm) or "layer" (LayerNorm)
+    alternate_sliding_window: bool = False  # Interleave sliding window attention blocks
+    scale_embeddings: bool = False  # Scale input embeddings by sqrt(hidden_size)
+    activation_type: str = "silu"  # "silu" (SwiGLU) or "gelu" (GeGLU)
 
 @dataclass
 class ParallelConfig:

@@ -1,5 +1,5 @@
 """
-Pure PyTorch implementation of Root Mean Square Normalization (RMSNorm).
+Pure PyTorch implementation of Root Mean Square Normalization (RMSNorm) and LayerNorm loaders.
 Avoids external dependencies like Triton or CUDA extensions.
 """
 
@@ -23,3 +23,9 @@ class RMSNorm(nn.Module):
         # Compute scaling factor
         x_normed = x * torch.rsqrt(variance + self.eps)
         return self.weight * x_normed
+
+def get_norm(hidden_size: int, norm_type: str = "rms", eps: float = 1e-5) -> nn.Module:
+    """Return appropriate normalization layer (RMSNorm or LayerNorm)."""
+    if norm_type == "layer":
+        return nn.LayerNorm(hidden_size, eps=eps)
+    return RMSNorm(hidden_size, eps=eps)

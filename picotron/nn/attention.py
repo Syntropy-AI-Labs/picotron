@@ -7,7 +7,7 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from picotron.nn.norm import RMSNorm
+from picotron.nn.norm import get_norm
 
 # Try importing flash_attn at module level safely
 _FLASH_ATTN_AVAILABLE = False
@@ -39,6 +39,10 @@ class Attention(nn.Module):
         sliding_window: int = None,
         logit_soft_cap: float = None,
         rms_norm_eps: float = 1e-5,
+        bias: bool = False,
+        norm_type: str = "rms",
+        layer_idx: int = 0,
+        alternate_sliding_window: bool = False,
     ):
         """Initialize attention components."""
         super().__init__()
@@ -52,6 +56,8 @@ class Attention(nn.Module):
         self.sliding_window = sliding_window
         self.logit_soft_cap = logit_soft_cap
         self.dropout = dropout
+        self.layer_idx = layer_idx
+        self.alternate_sliding_window = alternate_sliding_window
 
         # Decoupled RoPE dimension
         self.rope_dim = self.head_dim
@@ -63,29 +69,29 @@ class Attention(nn.Module):
             self.qk_rope_lora_rank = mla_qk_rope_lora_rank
             
             # Compressed projections
-            self.kv_down_proj = nn.Linear(hidden_size, self.kv_lora_rank, bias=False)
-            self.kv_up_proj = nn.Linear(self.kv_lora_rank, num_attention_heads * (self.head_dim + self.qk_rope_lora_rank), bias=False)
+            self.kv_down_proj = nn.Linear(hidden_size, self.kv_lora_rank, bias=bias)
+            self.kv_up_proj = nn.Linear(self.kv_lora_rank, num_attention_heads * (self.head_dim + self.qk_rope_lora_rank), bias=bias)
             
-            self.q_down_proj = nn.Linear(hidden_size, self.qk_lora_rank, bias=False)
-            self.q_up_proj = nn.Linear(self.qk_lora_rank, num_attention_heads * (self.head_dim + self.qk_rope_lora_rank), bias=False)
+            self.q_down_proj = nn.Linear(hidden_size, self.qk_lora_rank, bias=bias)
+            self.q_up_proj = nn.Linear(self.qk_lora_rank, num_attention_heads * (self.head_dim + self.qk_rope_lora_rank), bias=bias)
             
             # Decoupled key for RoPE
-            self.k_rope_proj = nn.Linear(hidden_size, mla_qk_rope_lora_rank, bias=False)
+            self.k_rope_proj = nn.Linear(hidden_size, mla_qk_rope_lora_rank, bias=bias)
             
             # Decoupled RoPE dimensions
             self.rope_dim = self.qk_rope_lora_rank
             self.total_q_dim = self.head_dim + self.qk_rope_lora_rank
         else:
-            self.q_proj = nn.Linear(hidden_size, num_attention_heads * self.head_dim, bias=False)
-            self.k_proj = nn.Linear(hidden_size, self.num_key_value_heads * self.head_dim, bias=False)
-            self.v_proj = nn.Linear(hidden_size, self.num_key_value_heads * self.head_dim, bias=False)
+            self.q_proj = nn.Linear(hidden_size, num_attention_heads * self.head_dim, bias=bias)
+            self.k_proj = nn.Linear(hidden_size, self.num_key_value_heads * self.head_dim, bias=bias)
+            self.v_proj = nn.Linear(hidden_size, self.num_key_value_heads * self.head_dim, bias=bias)
 
-        self.o_proj = nn.Linear(num_attention_heads * self.head_dim, hidden_size, bias=False)
+        self.o_proj = nn.Linear(num_attention_heads * self.head_dim, hidden_size, bias=bias)
 
         # Optional QK-Norm LayerNorms
         if self.qk_norm:
-            self.q_ln = RMSNorm(self.head_dim, eps=rms_norm_eps)
-            self.k_ln = RMSNorm(self.head_dim, eps=rms_norm_eps)
+            self.q_ln = get_norm(self.head_dim, norm_type=norm_type, eps=rms_norm_eps)
+            self.k_ln = get_norm(self.head_dim, norm_type=norm_type, eps=rms_norm_eps)
 
     def _repeat_kv(self, x: torch.Tensor, n_rep: int) -> torch.Tensor:
         """Repeat key or value states along the head dimension for Grouped-Query Attention."""
@@ -162,7 +168,12 @@ class Attention(nn.Module):
             v = F.pad(v, (0, pad_len))
 
         # Check flash attention availability
-        flash_available = _FLASH_ATTN_AVAILABLE and (q.device.type == "cuda") and (self.sliding_window is None) and (self.logit_soft_cap is None)
+        # For alternating sliding window, we check if it is active for this layer
+        sliding_window = self.sliding_window
+        if self.alternate_sliding_window and (self.layer_idx % 2 != 0):
+            sliding_window = None
+
+        flash_available = _FLASH_ATTN_AVAILABLE and (q.device.type == "cuda") and (sliding_window is None) and (self.logit_soft_cap is None)
         
         if flash_available:
             q_flash = q.transpose(1, 2)
@@ -189,8 +200,8 @@ class Attention(nn.Module):
             causal_mask = torch.tril(torch.ones(seq_len, seq_len, device=q.device)).view(1, 1, seq_len, seq_len)
             
             # Apply sliding window masking
-            if self.sliding_window is not None:
-                window_mask = torch.triu(torch.ones(seq_len, seq_len, device=q.device), diagonal=-self.sliding_window + 1)
+            if sliding_window is not None:
+                window_mask = torch.triu(torch.ones(seq_len, seq_len, device=q.device), diagonal=-sliding_window + 1)
                 causal_mask = causal_mask * window_mask.view(1, 1, seq_len, seq_len)
                 
             mask_value = torch.finfo(attn_weights.dtype).min
