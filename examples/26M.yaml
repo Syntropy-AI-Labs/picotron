@@ -34,3 +34,14 @@ train:
   seed: 42
   checkpoint_interval: 500
   checkpoint_dir: "checkpoints"
+preprocess:
+  output_path: "data/train.bin"
+  tokenizer: "gpt2"
+  vocab_limit: 32000
+  datasets:
+    - name: "HuggingFaceTB/smollm-corpus"
+      source: "hf"
+      config_name: "fineweb-edu-dedup"
+      split: "train"
+      text_key: "text"
+      target_tokens: 30000000

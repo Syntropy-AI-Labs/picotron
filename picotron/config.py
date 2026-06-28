@@ -84,12 +84,32 @@ class TrainConfig:
     load_checkpoint_dir: Optional[str] = None
 
 @dataclass
+class PreprocessorDatasetConfig:
+    """Config for a single dataset source in the preprocessing pipeline."""
+    name: str  # Local path or HF dataset name
+    source: str = "hf"  # "local" or "hf"
+    config_name: Optional[str] = None
+    split: str = "train"
+    text_key: str = "text"
+    target_tokens: int = -1  # Process everything by default
+
+@dataclass
+class PreprocessConfig:
+    """Configuration for data preprocessing."""
+    datasets: List[PreprocessorDatasetConfig] = field(default_factory=list)
+    output_path: str = "data/train.bin"
+    tokenizer: str = "gpt2"
+    vocab_limit: int = 32000
+    hf_token: Optional[str] = None
+
+@dataclass
 class PicotronConfig:
     """Root configuration for Picotron."""
     model: ModelConfig = field(default_factory=ModelConfig)
     parallel: ParallelConfig = field(default_factory=ParallelConfig)
     data: DataConfig = field(default_factory=DataConfig)
     train: TrainConfig = field(default_factory=TrainConfig)
+    preprocess: PreprocessConfig = field(default_factory=PreprocessConfig)
 
 def _from_dict(cls: Type[T], data: Dict[str, Any]) -> T:
     """Helper to instantiate nested dataclasses from dictionaries without external libraries."""
@@ -108,8 +128,18 @@ def _from_dict(cls: Type[T], data: Dict[str, Any]) -> T:
                 if non_none_args:
                     field_type = non_none_args[0]
 
+            # Handle List of dataclasses wrapping
+            is_list = False
+            list_item_type = None
+            if hasattr(field_type, "__origin__") and field_type.__origin__ is list:
+                is_list = True
+                if field_type.__args__:
+                    list_item_type = field_type.__args__[0]
+
             if is_dataclass(field_type) and isinstance(v, dict):
                 kwargs[k] = _from_dict(field_type, v)
+            elif is_list and list_item_type and is_dataclass(list_item_type) and isinstance(v, list):
+                kwargs[k] = [_from_dict(list_item_type, item) for item in v]
             else:
                 kwargs[k] = v
                 
@@ -129,3 +159,4 @@ def load_config_from_yaml(path: str) -> PicotronConfig:
     with open(path, "r", encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
     return _from_dict(PicotronConfig, data)
+
