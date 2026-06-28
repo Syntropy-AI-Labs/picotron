@@ -66,8 +66,8 @@ class LLaMAModel(nn.Module):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=self.config.initializer_range)
 
-    def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
-        """Forward pass through LLaMA decoder."""
+    def forward(self, input_ids: torch.Tensor):
+        """Forward pass through LLaMA decoder. Returns (logits, total_aux_loss)."""
         _, seq_len = input_ids.shape
         hidden_states = self.embed_tokens(input_ids)
         
@@ -78,14 +78,16 @@ class LLaMAModel(nn.Module):
         # Precompute rotary cos and sin slices for current seq_len
         cos, sin = self.rotary_emb(hidden_states, seq_len)
 
+        total_aux_loss = torch.tensor(0.0, device=input_ids.device, dtype=hidden_states.dtype)
         for layer in self.layers:
-            hidden_states = layer(
+            hidden_states, aux_loss = layer(
                 hidden_states,
                 cos=cos,
                 sin=sin,
                 rotary_emb=self.rotary_emb
             )
+            total_aux_loss = total_aux_loss + aux_loss
 
         hidden_states = self.norm(hidden_states)
         logits = self.lm_head(hidden_states)
-        return logits
+        return logits, total_aux_loss

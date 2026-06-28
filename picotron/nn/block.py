@@ -92,8 +92,8 @@ class TransformerBlock(nn.Module):
         cos: torch.Tensor,
         sin: torch.Tensor,
         rotary_emb: nn.Module,
-    ) -> torch.Tensor:
-        """Forward pass through block (sequential pre-norm or parallel attention/FFN)."""
+    ):
+        """Forward pass returning hidden states and auxiliary routing losses."""
         if self.parallel_attn_ffn:
             # Parallel attention/DeltaNet and FFN: run simultaneously, sum outputs
             residual = hidden_states
@@ -104,7 +104,7 @@ class TransformerBlock(nn.Module):
             else:
                 attn_out = self.self_attn(normed, cos, sin, rotary_emb)
                 
-            ffn_out = self.mlp(normed)
+            ffn_out, aux_loss = self.mlp(normed)
             hidden_states = residual + attn_out + ffn_out
         else:
             # Standard sequential pre-norm path
@@ -120,7 +120,7 @@ class TransformerBlock(nn.Module):
             
             residual = hidden_states
             hidden_states = self.post_attention_layernorm(hidden_states)
-            hidden_states = self.mlp(hidden_states)
-            hidden_states = residual + hidden_states
+            ffn_out, aux_loss = self.mlp(hidden_states)
+            hidden_states = residual + ffn_out
             
-        return hidden_states
+        return hidden_states, aux_loss

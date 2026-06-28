@@ -129,17 +129,17 @@ class Trainer:
             
             # Context manager for mixed precision
             with torch.cuda.amp.autocast(enabled=self.use_amp, dtype=self.amp_dtype):
-                logits = self.model(mb_x)
+                logits, aux_loss = self.model(mb_x)
                 # Reshape for cross entropy
-                loss = criterion(logits.view(-1, logits.size(-1)), mb_y.view(-1))
-                loss = loss / accum_steps
+                loss_ce = criterion(logits.view(-1, logits.size(-1)), mb_y.view(-1))
+                loss = (loss_ce + 0.01 * aux_loss) / accum_steps
                 
             if self.scaler.is_enabled():
                 self.scaler.scale(loss).backward()
             else:
                 loss.backward()
                 
-            loss_accum += loss.item()
+            loss_accum += loss_ce.item() / accum_steps
 
         # Update learning rate
         lr = self.get_lr(self.global_step)

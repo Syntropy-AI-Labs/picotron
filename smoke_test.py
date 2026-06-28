@@ -29,7 +29,7 @@ def run_smoke_test() -> None:
     input_ids = torch.randint(0, config.vocab_size, (2, 32))
     
     print("Running model forward pass...")
-    logits = model(input_ids)
+    logits, aux_loss = model(input_ids)
     
     # Check shape: [batch, sequence_length, vocab_size]
     expected_shape = (2, 32, config.vocab_size)
