@@ -70,8 +70,33 @@ def main() -> None:
         shuffle=True
     )
     
+    # Build validation dataloader if configured
+    val_dataloader = None
+    if cfg.data.validation_dataset_path:
+        logger.info(f"Loading validation dataset from: {cfg.data.validation_dataset_path}")
+        val_dataset = TokenizedDataset(
+            bin_path=cfg.data.validation_dataset_path,
+            sequence_length=cfg.data.sequence_length
+        )
+        val_dataloader = get_dataloader(
+            dataset=val_dataset,
+            batch_size=cfg.data.micro_batch_size,
+            num_workers=cfg.data.num_workers,
+            pin_memory=torch.cuda.is_available(),
+            distributed=distributed,
+            rank=rank,
+            world_size=world_size,
+            seed=cfg.train.seed,
+            shuffle=False
+        )
+    
     # Initialize Trainer and start training
-    trainer = Trainer(config=cfg, model=model, train_dataloader=dataloader)
+    trainer = Trainer(
+        config=cfg,
+        model=model,
+        train_dataloader=dataloader,
+        val_dataloader=val_dataloader
+    )
     logger.info("Starting training loop...")
     trainer.train()
     

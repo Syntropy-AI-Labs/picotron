@@ -68,6 +68,7 @@ class ParallelConfig:
 class DataConfig:
     """Configuration for data loading."""
     dataset_path: str = ""
+    validation_dataset_path: Optional[str] = None # Path to validation binary data
     sequence_length: int = 2048
     micro_batch_size: int = 4
     num_workers: int = 2
@@ -93,6 +94,10 @@ class TrainConfig:
     checkpoint_dir: str = "checkpoints"
     save_checkpoint: bool = True
     load_checkpoint_dir: Optional[str] = None
+    
+    # Optional evaluation configurations
+    eval_interval: int = 500   # Run evaluation on validation split every N steps
+    eval_steps: int = 50       # Number of validation steps to average over
     
     # Optional DeepSpeed configurations
     use_deepspeed: bool = False

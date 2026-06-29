@@ -1,6 +1,6 @@
 """
 Main Trainer loop for Picotron.
-Orchestrates training cycles, gradient accumulation, AMP autocast, logging, checkpointing, and optional DeepSpeed.
+Orchestrates training cycles, validation evaluations, gradient accumulation, AMP autocast, logging, and checkpointing.
 """
 
 import os
@@ -22,11 +22,12 @@ class Trainer:
     """
     Main trainer class for model pre-training.
     """
-    def __init__(self, config: PicotronConfig, model: nn.Module, train_dataloader):
+    def __init__(self, config: PicotronConfig, model: nn.Module, train_dataloader, val_dataloader=None):
         """Initialize trainer state, optimizer, learning rate schedule, and devices."""
         self.config = config
         self.raw_model = model
         self.dataloader = train_dataloader
+        self.val_dataloader = val_dataloader
         
         # Setup distributed ranks
         self.distributed = dist.is_available() and dist.is_initialized()
@@ -147,25 +148,60 @@ class Trainer:
         cosine_decay = 0.5 * (1.0 + math.cos(math.pi * progress))
         return tc.min_learning_rate + cosine_decay * (tc.learning_rate - tc.min_learning_rate)
 
+    @torch.no_grad()
+    def evaluate(self) -> float:
+        """Run evaluation on the validation dataloader and return average loss."""
+        if self.val_dataloader is None:
+            return 0.0
+            
+        self.model.eval()
+        val_iter = iter(self.val_dataloader)
+        val_loss_accum = 0.0
+        eval_steps = self.config.train.eval_steps
+        criterion = nn.CrossEntropyLoss()
+        
+        for step in range(eval_steps):
+            try:
+                x, y = next(val_iter)
+            except StopIteration:
+                val_iter = iter(self.val_dataloader)
+                x, y = next(val_iter)
+                
+            x = x.to(self.device)
+            y = y.to(self.device)
+            
+            with torch.cuda.amp.autocast(enabled=self.use_amp, dtype=self.amp_dtype):
+                logits, _ = self.model(x)
+                loss = criterion(logits.view(-1, logits.size(-1)), y.view(-1))
+                
+            val_loss_accum += loss.item()
+            
+        avg_val_loss = val_loss_accum / eval_steps
+        
+        # Sync losses across all ranks in distributed training
+        if self.distributed:
+            tensor_loss = torch.tensor(avg_val_loss, device=self.device)
+            dist.all_reduce(tensor_loss, op=dist.ReduceOp.SUM)
+            avg_val_loss = tensor_loss.item() / self.world_size
+            
+        self.model.train()
+        return avg_val_loss
+
     def train_step(self, x: torch.Tensor, y: torch.Tensor) -> float:
         """Run single step forward, backward, accumulation, and gradient update."""
         if self.use_deepspeed:
             mb_x = x.to(self.device)
             mb_y = y.to(self.device)
             
-            # Forward pass
             logits, aux_loss = self.model(mb_x)
             loss_ce = nn.CrossEntropyLoss()(logits.view(-1, logits.size(-1)), mb_y.view(-1))
             loss = loss_ce + 0.01 * aux_loss
             
-            # Backward pass & Step
             self.model.backward(loss)
             self.model.step()
             
-            # Track loss
             loss_accum = loss_ce.item()
             
-            # Manually decay learning rate (DeepSpeed handles this internally if configured, otherwise falls back to manual)
             lr = self.get_lr(self.global_step)
             for param_group in self.optimizer.param_groups:
                 param_group['lr'] = lr
@@ -232,7 +268,7 @@ class Trainer:
             write_header = not os.path.exists(metrics_path) or os.path.getsize(metrics_path) == 0
             metrics_file = open(metrics_path, "a", encoding="utf-8")
             if write_header:
-                metrics_file.write("step,loss,lr\n")
+                metrics_file.write("step,loss,lr,val_loss\n")
                 metrics_file.flush()
         
         # Use tqdm progress bar on rank 0
@@ -244,7 +280,15 @@ class Trainer:
             disable=(self.rank != 0)
         )
         
+        val_loss_str = ""
+        
         while self.global_step < self.config.train.max_steps:
+            # Trigger periodic evaluation if a validation dataloader is present
+            if self.val_dataloader is not None and self.global_step % self.config.train.eval_interval == 0:
+                val_loss = self.evaluate()
+                val_loss_str = f"{val_loss:.4f}"
+                logger.info(f"Evaluation at step {self.global_step}: Val Loss = {val_loss_str}")
+
             try:
                 x, y = next(data_iter)
             except StopIteration:
@@ -255,11 +299,15 @@ class Trainer:
             
             pbar.update(1)
             lr = self.optimizer.param_groups[0]['lr']
-            pbar.set_postfix({"loss": f"{loss:.4f}", "lr": f"{lr:.2e}"})
+            
+            pbar_metrics = {"loss": f"{loss:.4f}", "lr": f"{lr:.2e}"}
+            if val_loss_str:
+                pbar_metrics["val_loss"] = val_loss_str
+            pbar.set_postfix(pbar_metrics)
             
             # Write metrics to log file
             if self.rank == 0 and metrics_file is not None:
-                metrics_file.write(f"{self.global_step},{loss:.6f},{lr:.6e}\n")
+                metrics_file.write(f"{self.global_step},{loss:.6f},{lr:.6e},{val_loss_str}\n")
                 if self.global_step % 10 == 0:
                     metrics_file.flush()
                 
