@@ -40,4 +40,8 @@ ENV/
 # Scratch scripts
 scratch/
 
+# Local custom training configurations
+config_110M_reasoning.yaml
+
+
 
