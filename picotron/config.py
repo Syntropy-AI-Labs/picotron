@@ -93,6 +93,10 @@ class TrainConfig:
     checkpoint_dir: str = "checkpoints"
     save_checkpoint: bool = True
     load_checkpoint_dir: Optional[str] = None
+    
+    # Optional DeepSpeed configurations
+    use_deepspeed: bool = False
+    deepspeed_config: Optional[str] = None
 
 @dataclass
 class PreprocessorDatasetConfig:

@@ -1,6 +1,6 @@
 """
 Main Trainer loop for Picotron.
-Orchestrates training cycles, gradient accumulation, AMP autocast, logging, and checkpointing.
+Orchestrates training cycles, gradient accumulation, AMP autocast, logging, checkpointing, and optional DeepSpeed.
 """
 
 import os
@@ -57,39 +57,77 @@ class Trainer:
         self.use_amp = self.amp_dtype in (torch.float16, torch.bfloat16)
         self.scaler = torch.cuda.amp.GradScaler(enabled=(self.amp_dtype == torch.float16))
         
-        # Wrap model with DDP if distributed
-        if self.distributed:
-            self.model = DDP(self.raw_model, device_ids=[local_rank])
-        else:
-            self.model = self.raw_model
-
-        # JIT compile model if configured
-        if config.train.compile:
-            logger.info("Compiling model via torch.compile...")
-            self.model = torch.compile(self.model)
-
-        # Setup Optimizer (ZeRO-1 vs Standard AdamW)
-        if self.distributed and config.parallel.zero_stage == 1:
-            logger.info("Initializing ZeRO-1 optimizer...")
-            self.optimizer = ZeroRedundancyOptimizer(
-                self.raw_model.parameters(),
-                torch.optim.AdamW,
-                rank=self.rank,
-                world_size=self.world_size,
-                lr=config.train.learning_rate,
-                betas=(config.train.adam_beta1, config.train.adam_beta2),
-                eps=config.train.adam_eps,
-                weight_decay=config.train.weight_decay
+        self.use_deepspeed = config.train.use_deepspeed
+        if self.use_deepspeed:
+            logger.info("Initializing DeepSpeed Engine...")
+            try:
+                import deepspeed
+            except ImportError:
+                raise ImportError("deepspeed is not installed. Please install it using `pip install deepspeed` to use DeepSpeed features.")
+                
+            ds_config = config.train.deepspeed_config
+            if ds_config is None:
+                # Basic default config supporting ZeRO-2
+                ds_config = {
+                    "train_micro_batch_size_per_gpu": config.data.micro_batch_size,
+                    "gradient_accumulation_steps": config.train.grad_accum_steps,
+                    "zero_optimization": {
+                        "stage": 2,
+                        "allgather_partitions": True,
+                        "overlap_comm": True,
+                        "reduce_scatter": True,
+                        "contiguous_gradients": True
+                    },
+                    "fp16": {
+                        "enabled": self.amp_dtype == torch.float16
+                    },
+                    "bf16": {
+                        "enabled": self.amp_dtype == torch.bfloat16
+                    },
+                    "optimizer": {
+                        "type": "AdamW",
+                        "params": {
+                            "lr": config.train.learning_rate,
+                            "betas": [config.train.adam_beta1, config.train.adam_beta2],
+                            "eps": config.train.adam_eps,
+                            "weight_decay": config.train.weight_decay
+                        }
+                    }
+                }
+            self.model, self.optimizer, _, _ = deepspeed.initialize(
+                model=self.raw_model,
+                model_parameters=self.raw_model.parameters(),
+                config=ds_config
             )
         else:
-            logger.info("Initializing standard AdamW optimizer...")
-            self.optimizer = torch.optim.AdamW(
-                self.raw_model.parameters(),
-                lr=config.train.learning_rate,
-                betas=(config.train.adam_beta1, config.train.adam_beta2),
-                eps=config.train.adam_eps,
-                weight_decay=config.train.weight_decay
-            )
+            # Wrap model with DDP if distributed
+            if self.distributed:
+                self.model = DDP(self.raw_model, device_ids=[local_rank])
+            else:
+                self.model = self.raw_model
+
+            # Setup Optimizer (ZeRO-1 vs Standard AdamW)
+            if self.distributed and config.parallel.zero_stage == 1:
+                logger.info("Initializing ZeRO-1 optimizer...")
+                self.optimizer = ZeroRedundancyOptimizer(
+                    self.raw_model.parameters(),
+                    torch.optim.AdamW,
+                    rank=self.rank,
+                    world_size=self.world_size,
+                    lr=config.train.learning_rate,
+                    betas=(config.train.adam_beta1, config.train.adam_beta2),
+                    eps=config.train.adam_eps,
+                    weight_decay=config.train.weight_decay
+                )
+            else:
+                logger.info("Initializing standard AdamW optimizer...")
+                self.optimizer = torch.optim.AdamW(
+                    self.raw_model.parameters(),
+                    lr=config.train.learning_rate,
+                    betas=(config.train.adam_beta1, config.train.adam_beta2),
+                    eps=config.train.adam_eps,
+                    weight_decay=config.train.weight_decay
+                )
             
         self.global_step = 0
         if config.train.load_checkpoint_dir is not None:
@@ -99,8 +137,8 @@ class Trainer:
         """Calculate learning rate with linear warmup and cosine decay."""
         tc = self.config.train
         if step < tc.warmup_steps:
-            return tc.learning_rate * (step + 1) / tc.warmup_steps
-        
+            return tc.learning_rate * step / max(1, tc.warmup_steps)
+            
         decay_steps = tc.lr_decay_steps if tc.lr_decay_steps is not None else tc.max_steps
         if step > decay_steps:
             return tc.min_learning_rate
@@ -111,26 +149,45 @@ class Trainer:
 
     def train_step(self, x: torch.Tensor, y: torch.Tensor) -> float:
         """Run single step forward, backward, accumulation, and gradient update."""
+        if self.use_deepspeed:
+            mb_x = x.to(self.device)
+            mb_y = y.to(self.device)
+            
+            # Forward pass
+            logits, aux_loss = self.model(mb_x)
+            loss_ce = nn.CrossEntropyLoss()(logits.view(-1, logits.size(-1)), mb_y.view(-1))
+            loss = loss_ce + 0.01 * aux_loss
+            
+            # Backward pass & Step
+            self.model.backward(loss)
+            self.model.step()
+            
+            # Track loss
+            loss_accum = loss_ce.item()
+            
+            # Manually decay learning rate (DeepSpeed handles this internally if configured, otherwise falls back to manual)
+            lr = self.get_lr(self.global_step)
+            for param_group in self.optimizer.param_groups:
+                param_group['lr'] = lr
+                
+            self.global_step += 1
+            return loss_accum
+
+        # Native Training Loop (ZeRO-1 / DDP)
         loss_accum = 0.0
         self.optimizer.zero_grad(set_to_none=True)
-        
-        # Define cross entropy loss function
         criterion = nn.CrossEntropyLoss()
         
-        # Manual gradient accumulation
         accum_steps = self.config.train.grad_accum_steps
         for micro_step in range(accum_steps):
-            # Fetch slices for micro-batch
             mb_x = x[micro_step * x.size(0) // accum_steps : (micro_step + 1) * x.size(0) // accum_steps]
             mb_y = y[micro_step * y.size(0) // accum_steps : (micro_step + 1) * y.size(0) // accum_steps]
             
             mb_x = mb_x.to(self.device)
             mb_y = mb_y.to(self.device)
             
-            # Context manager for mixed precision
             with torch.cuda.amp.autocast(enabled=self.use_amp, dtype=self.amp_dtype):
                 logits, aux_loss = self.model(mb_x)
-                # Reshape for cross entropy
                 loss_ce = criterion(logits.view(-1, logits.size(-1)), mb_y.view(-1))
                 loss = (loss_ce + 0.01 * aux_loss) / accum_steps
                 
@@ -146,15 +203,12 @@ class Trainer:
         for param_group in self.optimizer.param_groups:
             param_group['lr'] = lr
 
-        # Unscale gradients for clipping
         if self.scaler.is_enabled():
             self.scaler.unscale_(self.optimizer)
             
-        # Apply gradient clipping
         if self.config.train.grad_clip > 0.0:
             torch.nn.utils.clip_grad_norm_(self.raw_model.parameters(), self.config.train.grad_clip)
             
-        # Step optimizer
         if self.scaler.is_enabled():
             self.scaler.step(self.optimizer)
             self.scaler.update()
@@ -224,33 +278,42 @@ class Trainer:
         if self.rank != 0 or not self.config.train.save_checkpoint:
             return
             
-        out_dir = os.path.join(self.config.train.checkpoint_dir, f"step_{self.global_step}")
-        os.makedirs(out_dir, exist_ok=True)
+        step_dir = os.path.join(self.config.train.checkpoint_dir, f"step_{self.global_step}")
+        os.makedirs(step_dir, exist_ok=True)
         
-        # Save model using safetensors
-        state_dict = self.raw_model.state_dict()
-        model_path = os.path.join(out_dir, "model.safetensors")
-        save_file(state_dict, model_path)
+        # Save weights in SafeTensors format
+        weights_path = os.path.join(step_dir, "model.safetensors")
+        save_file(self.raw_model.state_dict(), weights_path)
         
-        # Save config and scheduler stats
-        torch.save({
+        # Save training state metadata
+        state_dict = {
             "global_step": self.global_step,
-            "optimizer": self.optimizer.state_dict()
-        }, os.path.join(out_dir, "training_state.pt"))
-        logger.info(f"Checkpoint saved at: {out_dir}")
+            "optimizer_state": self.optimizer.state_dict(),
+        }
+        if self.scaler.is_enabled():
+            state_dict["scaler_state"] = self.scaler.state_dict()
+            
+        state_path = os.path.join(step_dir, "training_state.pt")
+        torch.save(state_dict, state_path)
+        logger.info(f"Checkpoint saved at: {step_dir}")
 
-    def load_checkpoint(self, checkpoint_path: str) -> None:
-        """Restore weights and states from checkpoint folder."""
-        # Find paths
-        model_path = os.path.join(checkpoint_path, "model.safetensors")
-        state_path = os.path.join(checkpoint_path, "training_state.pt")
+    def load_checkpoint(self, checkpoint_dir: str) -> None:
+        """Load training state and parameters from checkpoint."""
+        logger.info(f"Loading checkpoint from: {checkpoint_dir}")
         
-        if os.path.exists(model_path):
-            state_dict = load_file(model_path)
+        # Load parameters
+        weights_path = os.path.join(checkpoint_dir, "model.safetensors")
+        if os.path.exists(weights_path):
+            state_dict = load_file(weights_path)
             self.raw_model.load_state_dict(state_dict)
             
+        # Load optimizer state and step counters
+        state_path = os.path.join(checkpoint_dir, "training_state.pt")
         if os.path.exists(state_path):
-            checkpoint = torch.load(state_path, map_location=self.device)
-            self.global_step = checkpoint["global_step"]
-            self.optimizer.load_state_dict(checkpoint["optimizer"])
-            logger.info(f"Loaded checkpoint from: {checkpoint_path} (step: {self.global_step})")
+            state_dict = torch.load(state_path, map_location=self.device)
+            self.global_step = state_dict.get("global_step", 0)
+            
+            if "optimizer_state" in state_dict and not self.use_deepspeed:
+                self.optimizer.load_state_dict(state_dict["optimizer_state"])
+            if "scaler_state" in state_dict and self.scaler.is_enabled():
+                self.scaler.load_state_dict(state_dict["scaler_state"])
