@@ -12,20 +12,7 @@ dependencies = [
 ]
 
 [tool.setuptools]
-packages = [
-    "picotron",
-    "picotron.data",
-    "picotron.models",
-    "picotron.nn",
-    "picotron.kernels",
-    "picotron.kernels.triton_kernels",
-    "picotron.peft",
-    "picotron.rlhf",
-    "picotron.parallel",
-    "picotron.trainer",
-    "picotron.distillation",
-    "picotron.utils"
-]
+packages = {find = {}}
 
 [project.scripts]
 picotron-preprocess = "picotron.data.preprocess:main"
