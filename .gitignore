@@ -44,6 +44,7 @@ scratch/
 config_110M_reasoning.yaml
 config_2M_overtrained.yaml
 config_52M_foundation.yaml
+notebook.ipynb
 
 # Test exclude directory
 exclude/
