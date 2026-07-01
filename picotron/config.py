@@ -131,6 +131,7 @@ class PreprocessConfig:
     tokenizer: str = "gpt2"
     vocab_limit: int = 32000
     hf_token: Optional[str] = None
+    num_workers: Optional[int] = None
 
 @dataclass
 class PicotronConfig:
