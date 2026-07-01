@@ -22,7 +22,7 @@ share/python-wheels/
 *.egg
 
 # Data and checkpoints
-data/
+/data/
 checkpoints/
 
 # Virtual environments
