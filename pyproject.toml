@@ -13,6 +13,7 @@ dependencies = [
 
 [tool.setuptools.packages.find]
 where = ["."]
+include = ["picotron*"]
 
 [project.scripts]
 picotron-preprocess = "picotron.data.preprocess:main"
