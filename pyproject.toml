@@ -16,6 +16,7 @@ packages = {find = {}}
 
 [project.scripts]
 picotron-preprocess = "picotron.data.preprocess:main"
+picotron-data = "picotron.data.pipeline_cli:main"
 picotron-train = "train:main"
 
 [build-system]
