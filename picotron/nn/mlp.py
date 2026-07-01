@@ -22,13 +22,17 @@ class MLP(nn.Module):
 
     def forward(self, x: torch.Tensor):
         """Forward pass applying gating function (SwiGLU or GeGLU)."""
+        gate = self.gate_proj(x)
+        up = self.up_proj(x)
+        
         if self.activation_type == "gelu":
-            act = F.gelu(self.gate_proj(x))
+            act = F.gelu(gate) * up
         else:
-            act = F.silu(self.gate_proj(x))
+            from picotron.kernels.triton_kernels import triton_swiglu
+            act = triton_swiglu(gate, up)
             
         # Returns (output, auxiliary_loss=0.0) for unified block structure compatibility
-        return self.down_proj(act * self.up_proj(x)), torch.tensor(0.0, device=x.device, dtype=x.dtype)
+        return self.down_proj(act), torch.tensor(0.0, device=x.device, dtype=x.dtype)
 
 
 class MoE(nn.Module):

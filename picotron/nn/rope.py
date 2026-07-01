@@ -62,13 +62,15 @@ class RotaryEmbedding(nn.Module):
         return cos, sin
 
     def apply_rotary_pos_emb(self, q: torch.Tensor, k: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """Apply rotary embeddings to query and key tensors."""
+        """Apply rotary embeddings to query and key tensors (Triton Fused or PyTorch fallback)."""
         if self.position_embedding_type == "nope" or cos is None or sin is None:
             return q, k
             
-        cos = cos.unsqueeze(0).unsqueeze(1)  # [1, 1, seq_len, head_dim]
-        sin = sin.unsqueeze(0).unsqueeze(1)  # [1, 1, seq_len, head_dim]
+        # Transpose to [bsz, seq_len, num_heads, head_dim] for the Triton kernel layout
+        q_trans = q.transpose(1, 2).contiguous()
+        k_trans = k.transpose(1, 2).contiguous()
         
-        q_embed = (q * cos) + (self._rotate_half(q) * sin)
-        k_embed = (k * cos) + (self._rotate_half(k) * sin)
+        from picotron.kernels.triton_kernels import triton_rope
+        q_embed = triton_rope(q_trans, cos, sin).transpose(1, 2)
+        k_embed = triton_rope(k_trans, cos, sin).transpose(1, 2)
         return q_embed, k_embed

@@ -1,6 +1,7 @@
 """
 Main Trainer loop for Picotron.
 Orchestrates training cycles, validation evaluations, gradient accumulation, AMP autocast, logging, and checkpointing.
+Includes optimized PyTorch accelerations: prefetching dataloaders and async background checkpoints.
 """
 
 import os
@@ -11,12 +12,56 @@ import torch.nn as nn
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from safetensors.torch import save_file, load_file
+import threading
 from typing import Optional
 
 from picotron.config import PicotronConfig
 from picotron.utils.dtype import get_default_dtype
 from picotron.utils.logging import logger
 from picotron.optim.zero import ZeroRedundancyOptimizer
+
+class PrefetchDataloader:
+    """
+    Asynchronously prefetches the next batch of data to device memory.
+    Overlaps CPU-to-GPU memory transfer with GPU computing.
+    """
+    def __init__(self, dataloader, device):
+        self.dataloader = dataloader
+        self.device = device
+        self.stream = torch.cuda.Stream()
+        self.iter = None
+        self.next_x = None
+        self.next_y = None
+        
+    def __len__(self):
+        return len(self.dataloader)
+        
+    def __iter__(self):
+        self.iter = iter(self.dataloader)
+        self.preload()
+        return self
+        
+    def preload(self):
+        try:
+            self.next_x, self.next_y = next(self.iter)
+        except StopIteration:
+            self.next_x, self.next_y = None, None
+            return
+            
+        with torch.cuda.stream(self.stream):
+            self.next_x = self.next_x.to(self.device, non_blocking=True)
+            self.next_y = self.next_y.to(self.device, non_blocking=True)
+            
+    def __next__(self):
+        torch.cuda.current_stream().wait_stream(self.stream)
+        x = self.next_x
+        y = self.next_y
+        
+        if x is None:
+            raise StopIteration
+            
+        self.preload()
+        return x, y
 
 class Trainer:
     """
@@ -26,8 +71,6 @@ class Trainer:
         """Initialize trainer state, optimizer, learning rate schedule, and devices."""
         self.config = config
         self.raw_model = model
-        self.dataloader = train_dataloader
-        self.val_dataloader = val_dataloader
         
         # Setup distributed ranks
         self.distributed = dist.is_available() and dist.is_initialized()
@@ -100,6 +143,8 @@ class Trainer:
                 model_parameters=self.raw_model.parameters(),
                 config=ds_config
             )
+            self.dataloader = train_dataloader
+            self.val_dataloader = val_dataloader
         else:
             # Wrap model with DDP if distributed
             if self.distributed:
@@ -107,7 +152,16 @@ class Trainer:
             else:
                 self.model = self.raw_model
 
-            # Setup Optimizer (ZeRO-1 vs Standard AdamW)
+            # Wrap dataloaders with asynchronous prefetcher if running on GPU
+            if self.device.type == "cuda":
+                logger.info("Enabling asynchronous CUDA prefetching dataloaders...")
+                self.dataloader = PrefetchDataloader(train_dataloader, self.device)
+                self.val_dataloader = PrefetchDataloader(val_dataloader, self.device) if val_dataloader is not None else None
+            else:
+                self.dataloader = train_dataloader
+                self.val_dataloader = val_dataloader
+
+            # Setup Optimizer (ZeRO-1 vs Fused Standard AdamW)
             if self.distributed and config.parallel.zero_stage == 1:
                 logger.info("Initializing ZeRO-1 optimizer...")
                 self.optimizer = ZeroRedundancyOptimizer(
@@ -121,13 +175,16 @@ class Trainer:
                     weight_decay=config.train.weight_decay
                 )
             else:
-                logger.info("Initializing standard AdamW optimizer...")
+                logger.info("Initializing standard AdamW optimizer (Fused = True)...")
+                # Leverage PyTorch 2.0+ optimized fused AdamW kernel
+                use_fused = (self.device.type == "cuda")
                 self.optimizer = torch.optim.AdamW(
                     self.raw_model.parameters(),
                     lr=config.train.learning_rate,
                     betas=(config.train.adam_beta1, config.train.adam_beta2),
                     eps=config.train.adam_eps,
-                    weight_decay=config.train.weight_decay
+                    weight_decay=config.train.weight_decay,
+                    fused=use_fused
                 )
             
         self.global_step = 0
@@ -158,7 +215,6 @@ class Trainer:
         val_iter = iter(self.val_dataloader)
         val_loss_accum = 0.0
         eval_steps = self.config.train.eval_steps
-        criterion = nn.CrossEntropyLoss()
         
         for step in range(eval_steps):
             try:
@@ -167,18 +223,18 @@ class Trainer:
                 val_iter = iter(self.val_dataloader)
                 x, y = next(val_iter)
                 
-            x = x.to(self.device)
-            y = y.to(self.device)
+            x = x.to(self.device, non_blocking=True)
+            y = y.to(self.device, non_blocking=True)
             
             with torch.cuda.amp.autocast(enabled=self.use_amp, dtype=self.amp_dtype):
                 logits, _ = self.model(x)
-                loss = criterion(logits.view(-1, logits.size(-1)), y.view(-1))
+                from picotron.kernels.triton_kernels import triton_cross_entropy
+                loss = triton_cross_entropy(logits, y)
                 
             val_loss_accum += loss.item()
             
         avg_val_loss = val_loss_accum / eval_steps
         
-        # Sync losses across all ranks in distributed training
         if self.distributed:
             tensor_loss = torch.tensor(avg_val_loss, device=self.device)
             dist.all_reduce(tensor_loss, op=dist.ReduceOp.SUM)
@@ -212,19 +268,21 @@ class Trainer:
         # Native Training Loop (ZeRO-1 / DDP)
         loss_accum = 0.0
         self.optimizer.zero_grad(set_to_none=True)
-        criterion = nn.CrossEntropyLoss()
         
         accum_steps = self.config.train.grad_accum_steps
         for micro_step in range(accum_steps):
             mb_x = x[micro_step * x.size(0) // accum_steps : (micro_step + 1) * x.size(0) // accum_steps]
             mb_y = y[micro_step * y.size(0) // accum_steps : (micro_step + 1) * y.size(0) // accum_steps]
             
-            mb_x = mb_x.to(self.device)
-            mb_y = mb_y.to(self.device)
+            mb_x = mb_x.to(self.device, non_blocking=True)
+            mb_y = mb_y.to(self.device, non_blocking=True)
             
             with torch.cuda.amp.autocast(enabled=self.use_amp, dtype=self.amp_dtype):
                 logits, aux_loss = self.model(mb_x)
-                loss_ce = criterion(logits.view(-1, logits.size(-1)), mb_y.view(-1))
+                
+                # Fused Cross Entropy Triton Kernel
+                from picotron.kernels.triton_kernels import triton_cross_entropy
+                loss_ce = triton_cross_entropy(logits, mb_y)
                 loss = (loss_ce + 0.01 * aux_loss) / accum_steps
                 
             if self.scaler.is_enabled():
@@ -322,48 +380,64 @@ class Trainer:
             metrics_file.close()
 
     def save_checkpoint(self) -> None:
-        """Persist training weights and optimizer state to files."""
+        """Persist training weights and optimizer state to files asynchronously."""
         if self.rank != 0 or not self.config.train.save_checkpoint:
             return
             
         step_dir = os.path.join(self.config.train.checkpoint_dir, f"step_{self.global_step}")
         os.makedirs(step_dir, exist_ok=True)
         
-        # Save weights in SafeTensors format
         weights_path = os.path.join(step_dir, "model.safetensors")
-        save_file(self.raw_model.state_dict(), weights_path)
+        state_path = os.path.join(step_dir, "training_state.pt")
         
-        # Save training state metadata
+        # Prepare state dict metadata
         state_dict = {
             "global_step": self.global_step,
             "optimizer_state": self.optimizer.state_dict(),
         }
         if self.scaler.is_enabled():
             state_dict["scaler_state"] = self.scaler.state_dict()
-            
-        state_path = os.path.join(step_dir, "training_state.pt")
-        torch.save(state_dict, state_path)
-        logger.info(f"Checkpoint saved at: {step_dir}")
+
+        # Copy raw model weights to CPU asynchronously to avoid blocking CUDA execution stream
+        model_state_cpu = {k: v.cpu() for k, v in self.raw_model.state_dict().items()}
         
-        # Optional Hugging Face Hub checkpoint upload
-        hf_repo_id = self.config.train.hf_repo_id
-        if hf_repo_id is not None:
-            logger.info(f"Uploading checkpoint step_{self.global_step} to Hugging Face Hub: {hf_repo_id}...")
+        # Run saving tasks in a background thread
+        def async_save_task(step_dir, model_state, state_dict, weights_path, state_path, hf_repo_id, hf_token, global_step):
             try:
-                from huggingface_hub import HfApi, create_repo
-                token = self.config.train.hf_token
-                create_repo(repo_id=hf_repo_id, repo_type="model", exist_ok=True, token=token)
+                save_file(model_state, weights_path)
+                torch.save(state_dict, state_path)
+                logger.info(f"Asynchronous checkpoint saved at: {step_dir}")
                 
-                api = HfApi(token=token)
-                api.upload_folder(
-                    folder_path=step_dir,
-                    repo_id=hf_repo_id,
-                    repo_type="model",
-                    path_in_repo=f"checkpoint-step-{self.global_step}"
-                )
-                logger.info(f"Checkpoint uploaded successfully to HF Hub: {hf_repo_id}/checkpoint-step-{self.global_step}")
+                # Optional Hugging Face Hub checkpoint upload
+                if hf_repo_id is not None:
+                    logger.info(f"Uploading checkpoint step_{global_step} to Hugging Face Hub: {hf_repo_id}...")
+                    from huggingface_hub import HfApi, create_repo
+                    create_repo(repo_id=hf_repo_id, repo_type="model", exist_ok=True, token=hf_token)
+                    api = HfApi(token=hf_token)
+                    api.upload_folder(
+                        folder_path=step_dir,
+                        repo_id=hf_repo_id,
+                        repo_type="model",
+                        path_in_repo=f"checkpoint-step-{global_step}"
+                    )
+                    logger.info(f"Checkpoint uploaded successfully to HF Hub: {hf_repo_id}/checkpoint-step-{global_step}")
             except Exception as e:
-                logger.error(f"Failed to upload checkpoint to Hugging Face Hub: {e}")
+                logger.error(f"Error during async checkpoint saving: {e}")
+
+        # Dispatch background thread
+        threading.Thread(
+            target=async_save_task,
+            args=(
+                step_dir,
+                model_state_cpu,
+                state_dict,
+                weights_path,
+                state_path,
+                self.config.train.hf_repo_id,
+                self.config.train.hf_token,
+                self.global_step
+            )
+        ).start()
 
     def load_checkpoint(self, checkpoint_dir: str) -> None:
         """Load training state and parameters from checkpoint."""

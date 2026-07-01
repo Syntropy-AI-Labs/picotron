@@ -17,12 +17,9 @@ class RMSNorm(nn.Module):
         self.weight = nn.Parameter(torch.ones(hidden_size))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Apply RMSNorm to the input tensor."""
-        # Calculate variance using manual formula for precision control
-        variance = x.pow(2).mean(-1, keepdim=True)
-        # Compute scaling factor
-        x_normed = x * torch.rsqrt(variance + self.eps)
-        return self.weight * x_normed
+        """Apply RMSNorm to the input tensor (Triton Fused or PyTorch fallback)."""
+        from picotron.kernels.triton_kernels import triton_rmsnorm
+        return triton_rmsnorm(x, self.weight, self.eps)
 
 def get_norm(hidden_size: int, norm_type: str = "rms", eps: float = 1e-5) -> nn.Module:
     """Return appropriate normalization layer (RMSNorm or LayerNorm)."""
