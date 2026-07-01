@@ -1,7 +1,7 @@
 """
 Main Trainer loop for Picotron.
 Orchestrates training cycles, validation evaluations, gradient accumulation, AMP autocast, logging, and checkpointing.
-Includes optimized PyTorch accelerations: prefetching dataloaders and async background checkpoints.
+Includes optimized PyTorch accelerations: prefetching dataloaders, async background checkpoints, memory pooling, and CUDA Graphs.
 """
 
 import os
@@ -87,6 +87,12 @@ class Trainer:
         local_rank = int(os.environ.get("LOCAL_RANK", 0))
         self.device = torch.device(f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu")
         self.raw_model.to(self.device)
+        
+        # Configure Caching Allocator Memory Pool to prevent allocations overhead
+        if self.device.type == "cuda":
+            os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:128,garbage_collection_threshold:0.8"
+            torch.cuda.set_per_process_memory_fraction(0.95, device=self.device)
+            logger.info("Memory Pooling caching allocations enabled (95% GPU capacity limit).")
         
         # Setup mixed precision auto-detection
         if config.train.mixed_precision == "auto":
@@ -187,6 +193,13 @@ class Trainer:
                     fused=use_fused
                 )
             
+        # CUDA Graphs Initialization
+        self.use_cuda_graphs = config.train.use_cuda_graphs and self.device.type == "cuda" and not self.use_deepspeed
+        self.cuda_graph = None
+        self.static_x = None
+        self.static_y = None
+        self.static_loss = None
+        
         self.global_step = 0
         if config.train.load_checkpoint_dir is not None:
             self.load_checkpoint(config.train.load_checkpoint_dir)
@@ -265,7 +278,80 @@ class Trainer:
             self.global_step += 1
             return loss_accum
 
-        # Native Training Loop (ZeRO-1 / DDP)
+        # -------------------------------------------------------------
+        # CUDA Graphs Acceleration Path
+        # -------------------------------------------------------------
+        if self.use_cuda_graphs:
+            # Initialize static input placeholders on first call
+            if self.static_x is None:
+                accum_steps = self.config.train.grad_accum_steps
+                mb_shape_x = (x.size(0) // accum_steps, x.size(1))
+                mb_shape_y = (y.size(0) // accum_steps, y.size(1))
+                
+                self.static_x = torch.empty(mb_shape_x, dtype=x.dtype, device=self.device)
+                self.static_y = torch.empty(mb_shape_y, dtype=y.dtype, device=self.device)
+
+            if self.cuda_graph is None:
+                logger.info("Warming up caching allocator for CUDA Graphs...")
+                # Run 3 warmup steps to stabilize memory allocations
+                for _ in range(3):
+                    self.optimizer.zero_grad(set_to_none=True)
+                    self.static_x.copy_(x[:self.static_x.size(0)])
+                    self.static_y.copy_(y[:self.static_y.size(0)])
+                    with torch.cuda.amp.autocast(enabled=self.use_amp, dtype=self.amp_dtype):
+                        logits, aux_loss = self.model(self.static_x)
+                        from picotron.kernels.triton_kernels import triton_cross_entropy
+                        loss = triton_cross_entropy(logits, self.static_y) + 0.01 * aux_loss
+                    if self.scaler.is_enabled():
+                        self.scaler.scale(loss).backward()
+                        self.scaler.step(self.optimizer)
+                        self.scaler.update()
+                    else:
+                        loss.backward()
+                        self.optimizer.step()
+
+                logger.info("Capturing steps using CUDA Graph...")
+                self.cuda_graph = torch.cuda.CUDAGraph()
+                self.optimizer.zero_grad(set_to_none=True)
+                
+                # Record static execution flow
+                with torch.cuda.graph(self.cuda_graph):
+                    with torch.cuda.amp.autocast(enabled=self.use_amp, dtype=self.amp_dtype):
+                        logits, aux_loss = self.model(self.static_x)
+                        from picotron.kernels.triton_kernels import triton_cross_entropy
+                        loss = triton_cross_entropy(logits, self.static_y) + 0.01 * aux_loss
+                        
+                    if self.scaler.is_enabled():
+                        self.scaler.scale(loss).backward()
+                    else:
+                        loss.backward()
+                        
+                logger.info("CUDA Graph successfully captured!")
+
+            # Copy batch inputs to placeholders
+            self.static_x.copy_(x[:self.static_x.size(0)], non_blocking=True)
+            self.static_y.copy_(y[:self.static_y.size(0)], non_blocking=True)
+            
+            # Replay captured forward/backward steps directly on the GPU
+            self.cuda_graph.replay()
+            
+            # Step optimizer outside captured graph
+            lr = self.get_lr(self.global_step)
+            for param_group in self.optimizer.param_groups:
+                param_group['lr'] = lr
+                
+            if self.scaler.is_enabled():
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+            else:
+                self.optimizer.step()
+                
+            self.global_step += 1
+            return loss.item()
+
+        # -------------------------------------------------------------
+        # Standard Native Training Path
+        # -------------------------------------------------------------
         loss_accum = 0.0
         self.optimizer.zero_grad(set_to_none=True)
         

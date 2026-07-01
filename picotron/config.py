@@ -106,6 +106,9 @@ class TrainConfig:
     # Hugging Face integration options
     hf_token: Optional[str] = None       # Write token for dataset and model upload access
     hf_repo_id: Optional[str] = None     # Hub repository identifier (e.g. org/repo_name)
+    
+    # Advanced acceleration options
+    use_cuda_graphs: bool = False        # Capture and replay execution graph for faster steps
 
 @dataclass
 class PreprocessorDatasetConfig:
