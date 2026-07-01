@@ -37,6 +37,26 @@ class TransformerBlock(nn.Module):
                 num_heads=config.num_attention_heads,
                 bias=config.bias
             )
+        elif config.mixer_type == "mla":
+            from picotron.nn.mixers import MLA
+            head_dim = config.hidden_size // config.num_attention_heads
+            self.self_attn = MLA(
+                hidden_size=config.hidden_size,
+                num_heads=config.num_attention_heads,
+                head_dim=head_dim
+            )
+        elif config.mixer_type == "mamba":
+            from picotron.nn.mixers import SelectiveSSM
+            self.self_attn = SelectiveSSM(
+                d_model=config.hidden_size,
+                d_inner=config.hidden_size
+            )
+        elif config.mixer_type == "rwkv":
+            from picotron.nn.mixers import RWKVRecurrence
+            self.self_attn = RWKVRecurrence(
+                d_model=config.hidden_size,
+                d_inner=config.hidden_size
+            )
         else:
             num_kv = config.num_key_value_heads if config.num_key_value_heads is not None else config.num_attention_heads
             self.self_attn = Attention(
@@ -94,16 +114,23 @@ class TransformerBlock(nn.Module):
         rotary_emb: nn.Module,
     ):
         """Forward pass returning hidden states and auxiliary routing losses."""
+        # Select correct mixer forwarding signature
+        def forward_mixer(layer, input_tensor):
+            if self.config.mixer_type == "mamba" or self.config.mixer_type == "rwkv":
+                return layer(input_tensor)
+            elif self.config.mixer_type == "mla":
+                return layer(input_tensor, cos, sin)
+            elif self.is_deltanet:
+                return layer(input_tensor)
+            else:
+                return layer(input_tensor, cos, sin, rotary_emb)
+
         if self.parallel_attn_ffn:
             # Parallel attention/DeltaNet and FFN: run simultaneously, sum outputs
             residual = hidden_states
             normed = self.input_layernorm(hidden_states)
             
-            if self.is_deltanet:
-                attn_out = self.self_attn(normed)
-            else:
-                attn_out = self.self_attn(normed, cos, sin, rotary_emb)
-                
+            attn_out = forward_mixer(self.self_attn, normed)
             ffn_out, aux_loss = self.mlp(normed)
             hidden_states = residual + attn_out + ffn_out
         else:
@@ -111,11 +138,7 @@ class TransformerBlock(nn.Module):
             residual = hidden_states
             hidden_states = self.input_layernorm(hidden_states)
             
-            if self.is_deltanet:
-                attn_out = self.self_attn(hidden_states)
-            else:
-                attn_out = self.self_attn(hidden_states, cos, sin, rotary_emb)
-                
+            attn_out = forward_mixer(self.self_attn, hidden_states)
             hidden_states = residual + attn_out
             
             residual = hidden_states

@@ -57,6 +57,9 @@ class ModelConfig:
     # Qwen 3.5 Gated DeltaNet additions
     use_deltanet: bool = False  # Enable hybrid Attention + Gated DeltaNet architecture
     deltanet_ratio: int = 3  # Ratio of DeltaNet layers to standard Attention layers (e.g. 3:1)
+    
+    # Modern mixer architecture configuration
+    mixer_type: str = "attention"  # "attention", "mla", "mamba", "rwkv"
 
 @dataclass
 class ParallelConfig:
