@@ -1,0 +1,3 @@
+"""
+Picotron parallel computing strategies.
+"""
