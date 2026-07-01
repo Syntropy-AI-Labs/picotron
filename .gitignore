@@ -44,6 +44,10 @@ scratch/
 config_110M_reasoning.yaml
 config_2M_overtrained.yaml
 
+# Test exclude directory
+exclude/
+
+
 
 
 

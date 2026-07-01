@@ -102,6 +102,10 @@ class TrainConfig:
     # Optional DeepSpeed configurations
     use_deepspeed: bool = False
     deepspeed_config: Optional[str] = None
+    
+    # Hugging Face integration options
+    hf_token: Optional[str] = None       # Write token for dataset and model upload access
+    hf_repo_id: Optional[str] = None     # Hub repository identifier (e.g. org/repo_name)
 
 @dataclass
 class PreprocessorDatasetConfig:

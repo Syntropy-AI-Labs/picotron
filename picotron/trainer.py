@@ -344,6 +344,26 @@ class Trainer:
         state_path = os.path.join(step_dir, "training_state.pt")
         torch.save(state_dict, state_path)
         logger.info(f"Checkpoint saved at: {step_dir}")
+        
+        # Optional Hugging Face Hub checkpoint upload
+        hf_repo_id = self.config.train.hf_repo_id
+        if hf_repo_id is not None:
+            logger.info(f"Uploading checkpoint step_{self.global_step} to Hugging Face Hub: {hf_repo_id}...")
+            try:
+                from huggingface_hub import HfApi, create_repo
+                token = self.config.train.hf_token
+                create_repo(repo_id=hf_repo_id, repo_type="model", exist_ok=True, token=token)
+                
+                api = HfApi(token=token)
+                api.upload_folder(
+                    folder_path=step_dir,
+                    repo_id=hf_repo_id,
+                    repo_type="model",
+                    path_in_repo=f"checkpoint-step-{self.global_step}"
+                )
+                logger.info(f"Checkpoint uploaded successfully to HF Hub: {hf_repo_id}/checkpoint-step-{self.global_step}")
+            except Exception as e:
+                logger.error(f"Failed to upload checkpoint to Hugging Face Hub: {e}")
 
     def load_checkpoint(self, checkpoint_dir: str) -> None:
         """Load training state and parameters from checkpoint."""
