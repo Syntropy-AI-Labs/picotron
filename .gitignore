@@ -43,6 +43,7 @@ scratch/
 # Local custom training configurations
 config_110M_reasoning.yaml
 config_2M_overtrained.yaml
+config_52M_foundation.yaml
 
 # Test exclude directory
 exclude/
