@@ -40,7 +40,7 @@ if _TRITON_AVAILABLE:
         
         # Fused residual addition
         x_new = x + res
-        tl.store(X_ptr + offsets, x_new.to(X_ptr.dtype_element), mask=mask)
+        tl.store(X_ptr + offsets, x_new.to(X_ptr.dtype.element_ty), mask=mask)
         
         # Norm calculation on newly fused residual vector
         var = tl.sum(x_new * x_new, axis=0) / N_cols
@@ -49,7 +49,7 @@ if _TRITON_AVAILABLE:
         
         w = tl.load(W_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
         y = x_new * rstd * w
-        tl.store(Y_ptr + offsets, y.to(Y_ptr.dtype_element), mask=mask)
+        tl.store(Y_ptr + offsets, y.to(Y_ptr.dtype.element_ty), mask=mask)
 
 def triton_residual_add_rmsnorm(x, residual, weight, eps=1e-5):
     """Fuses adding residual link and computing RMSNorm on the output in one pass."""
@@ -101,7 +101,7 @@ if _TRITON_AVAILABLE:
         else:
             out = x_biased * 0.5 * (1.0 + tl.math.erf(x_biased * 0.70710678))
             
-        tl.store(Out_ptr + offsets, out.to(Out_ptr.dtype_element), mask=mask)
+        tl.store(Out_ptr + offsets, out.to(Out_ptr.dtype.element_ty), mask=mask)
 
 def triton_bias_activation(x, bias, activation_type="silu"):
     """Fuses linear bias addition and activation computation."""

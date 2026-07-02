@@ -41,7 +41,7 @@ if _TRITON_AVAILABLE:
         
         w = tl.load(W_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
         y = x * rstd * w
-        tl.store(Y_ptr + offsets, y.to(X_ptr.dtype_element), mask=mask)
+        tl.store(Y_ptr + offsets, y.to(X_ptr.dtype.element_ty), mask=mask)
 
     @triton.jit
     def _rmsnorm_bwd_kernel(
@@ -66,10 +66,10 @@ if _TRITON_AVAILABLE:
         sum_dy_w_x = tl.sum(dy_w * x, axis=0)
         
         dx = rstd * dy_w - (rstd * rstd * rstd / N_cols) * x * sum_dy_w_x
-        tl.store(DX_ptr + offsets, dx.to(DX_ptr.dtype_element), mask=mask)
+        tl.store(DX_ptr + offsets, dx.to(DX_ptr.dtype.element_ty), mask=mask)
         
         dw = dy * x * rstd
-        tl.store(DW_ptr + row_idx * BLOCK_SIZE + offsets, dw.to(DW_ptr.dtype_element), mask=mask)
+        tl.store(DW_ptr + row_idx * BLOCK_SIZE + offsets, dw.to(DW_ptr.dtype.element_ty), mask=mask)
 
 class TritonRMSNormFunction(torch.autograd.Function):
     @staticmethod
@@ -141,7 +141,7 @@ if _TRITON_AVAILABLE:
         w = tl.load(W_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
         b = tl.load(B_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
         y = x_mu * rstd * w + b
-        tl.store(Y_ptr + offsets, y.to(Y_ptr.dtype_element), mask=mask)
+        tl.store(Y_ptr + offsets, y.to(Y_ptr.dtype.element_ty), mask=mask)
 
 class TritonLayerNormFunction(torch.autograd.Function):
     @staticmethod
@@ -211,7 +211,7 @@ if _TRITON_AVAILABLE:
             act = gate * 0.5 * (1.0 + tl.math.erf(gate * 0.70710678))
             
         out = act * up
-        tl.store(Out_ptr + offsets, out.to(Out_ptr.dtype_element), mask=mask)
+        tl.store(Out_ptr + offsets, out.to(Out_ptr.dtype.element_ty), mask=mask)
 
 def triton_swiglu(gate, up):
     if _TRITON_AVAILABLE and gate.is_cuda:

@@ -18,6 +18,7 @@ packages = {find = {}}
 picotron-preprocess = "picotron.data.preprocess:main"
 picotron-data = "picotron.data.pipeline_cli:main"
 picotron-train = "train:main"
+picotron-bench = "picotron.training.benchmark:main"
 
 [build-system]
 requires = ["setuptools"]

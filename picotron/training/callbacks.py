@@ -1,5 +1,5 @@
 """
-Unified callback system for Picotron trainers.
+Unified callback system for Picotron training loop.
 """
 
 from typing import Dict, Any

@@ -284,9 +284,8 @@ class Trainer:
         if self.use_cuda_graphs:
             # Initialize static input placeholders on first call
             if self.static_x is None:
-                accum_steps = self.config.train.grad_accum_steps
-                mb_shape_x = (x.size(0) // accum_steps, x.size(1))
-                mb_shape_y = (y.size(0) // accum_steps, y.size(1))
+                mb_shape_x = (x.size(0), x.size(1))
+                mb_shape_y = (y.size(0), y.size(1))
                 
                 self.static_x = torch.empty(mb_shape_x, dtype=x.dtype, device=self.device)
                 self.static_y = torch.empty(mb_shape_y, dtype=y.dtype, device=self.device)

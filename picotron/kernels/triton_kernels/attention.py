@@ -48,8 +48,8 @@ if _TRITON_AVAILABLE:
         out1 = q1 * cos - q2 * sin
         out2 = q1 * sin + q2 * cos
         
-        tl.store(Out_ptr + q_offset + offsets, out1.to(Out_ptr.dtype_element), mask=cos_mask)
-        tl.store(Out_ptr + q_offset + half_dim + offsets, out2.to(Out_ptr.dtype_element), mask=cos_mask)
+        tl.store(Out_ptr + q_offset + offsets, out1.to(Out_ptr.dtype.element_ty), mask=cos_mask)
+        tl.store(Out_ptr + q_offset + half_dim + offsets, out2.to(Out_ptr.dtype.element_ty), mask=cos_mask)
 
 def triton_rope(q, cos, sin):
     if _TRITON_AVAILABLE and q.is_cuda:
@@ -97,7 +97,7 @@ if _TRITON_AVAILABLE:
         sum_exp = tl.sum(exp_x, axis=0)
         
         y = exp_x / sum_exp
-        tl.store(Y_ptr + row_idx * N_cols + offsets, y.to(Y_ptr.dtype_element), mask=mask)
+        tl.store(Y_ptr + row_idx * N_cols + offsets, y.to(Y_ptr.dtype.element_ty), mask=mask)
 
 def triton_softmax(x):
     if _TRITON_AVAILABLE and x.is_cuda:
@@ -132,7 +132,7 @@ if _TRITON_AVAILABLE:
         keep = rand >= p
         
         out = tl.where(keep, x / (1.0 - p), 0.0)
-        tl.store(Out_ptr + offsets, out.to(Out_ptr.dtype_element), mask=mask)
+        tl.store(Out_ptr + offsets, out.to(Out_ptr.dtype.element_ty), mask=mask)
 
 def triton_dropout(x, p=0.0, training=True):
     if not training or p == 0.0:

@@ -49,7 +49,7 @@ if _TRITON_AVAILABLE:
         
         step_sz = lr * tl.math.sqrt(bias_corr2) / bias_corr1
         p_new = p - step_sz * m / (tl.math.sqrt(v) + eps)
-        tl.store(Param_ptr + offsets, p_new.to(Param_ptr.dtype_element), mask=mask)
+        tl.store(Param_ptr + offsets, p_new.to(Param_ptr.dtype.element_ty), mask=mask)
 
 def triton_adamw(params, grads, exp_avgs, exp_avg_sqs, lr, beta1, beta2, eps, wd, step):
     if _TRITON_AVAILABLE and params.is_cuda:
@@ -104,7 +104,7 @@ if _TRITON_AVAILABLE:
             g = buf
             
         p_new = p - lr * g
-        tl.store(Param_ptr + offsets, p_new.to(Param_ptr.dtype_element), mask=mask)
+        tl.store(Param_ptr + offsets, p_new.to(Param_ptr.dtype.element_ty), mask=mask)
 
 def triton_sgd(params, grads, momentum_buffers, lr, momentum_factor, dampening, weight_decay, nestrov):
     if _TRITON_AVAILABLE and params.is_cuda:
