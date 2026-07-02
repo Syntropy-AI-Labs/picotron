@@ -44,6 +44,11 @@ class PreferenceTrainer(Trainer):
         per_token_logps = torch.gather(log_probs, dim=-1, index=clamped_labels.unsqueeze(-1)).squeeze(-1)
         return (per_token_logps * loss_mask).sum(dim=-1)
 
+    def train_step(self, x, y=None) -> float:
+        if isinstance(x, dict):
+            return self.train_step_preference(x)
+        return super().train_step(x, y)
+
     def train_step_preference(self, batch: dict) -> float:
         """Compute training losses on policy vs reference outputs."""
         self.optimizer.zero_grad(set_to_none=True)
