@@ -60,7 +60,8 @@ class LoRALinear(nn.Module):
         if self.merged:
             return
         if self.use_dora:
-            # DoRA weight merging
+            # Cache the original base layer weight so we can restore it during unmerge
+            self.original_weight = self.base_layer.weight.data.clone()
             weight = self.base_layer.weight.data.float()
             lora_weight = (self.lora_B @ self.lora_A) * self.scaling
             fused_weight = weight + lora_weight
@@ -77,10 +78,9 @@ class LoRALinear(nn.Module):
         if not self.merged:
             return
         if self.use_dora:
-            # Reconstruct original base weights using magnitude
-            weight = self.base_layer.weight.data.float()
-            lora_weight = (self.lora_B @ self.lora_A) * self.scaling
-            self.base_layer.weight.data = (weight - lora_weight).to(self.base_layer.weight.dtype)
+            # Restore cached original base weights
+            self.base_layer.weight.data = self.original_weight.clone()
+            self.original_weight = None
         else:
             lora_weight = (self.lora_B @ self.lora_A) * self.scaling
             self.base_layer.weight.data -= lora_weight.to(self.base_layer.weight.dtype)

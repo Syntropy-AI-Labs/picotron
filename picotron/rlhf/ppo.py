@@ -205,8 +205,12 @@ class PPOTrainer:
         # 4. Compute Value Function Loss
         vf_loss = (response_values - returns).pow(2)
         
+        # Mask out padding tokens to avoid noise propagation
+        masked_policy_loss = (policy_loss * masks).sum() / masks.sum().clamp(min=1.0)
+        masked_vf_loss = (vf_loss * masks).sum() / masks.sum().clamp(min=1.0)
+        
         # Combined objective loss
-        loss = (policy_loss + self.vf_coef * vf_loss).mean()
+        loss = masked_policy_loss + self.vf_coef * masked_vf_loss
         
         # Backward and step optimizer
         loss.backward()

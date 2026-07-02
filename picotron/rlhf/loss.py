@@ -41,8 +41,10 @@ def compute_orpo_loss(
     """
     # log odds = log(p / (1 - p)) = log(p) - log(1 - p)
     # Using logsigmoid approximation for stability
-    log_odds_chosen = policy_chosen_logps - torch.log1p(-torch.exp(policy_chosen_logps) + 1e-7)
-    log_odds_rejected = policy_rejected_logps - torch.log1p(-torch.exp(policy_rejected_logps) + 1e-7)
+    p_chosen = torch.exp(policy_chosen_logps).clamp(max=1.0 - 1e-7)
+    p_rejected = torch.exp(policy_rejected_logps).clamp(max=1.0 - 1e-7)
+    log_odds_chosen = policy_chosen_logps - torch.log1p(-p_chosen)
+    log_odds_rejected = policy_rejected_logps - torch.log1p(-p_rejected)
     
     odds_ratio = log_odds_chosen - log_odds_rejected
     or_loss = -F.logsigmoid(odds_ratio).mean()
