@@ -94,6 +94,29 @@ class PreferenceTrainer(Trainer):
                     policy_chosen_nll=nll_loss,
                     beta=self.beta
                 )
+            elif self.mode == "grpo":
+                # GRPO requires reference model forward passes
+                with torch.no_grad():
+                    ref_chosen_logits, _ = self.ref_model(chosen_input)
+                    ref_rejected_logits, _ = self.ref_model(rejected_input)
+                    ref_chosen_logps = self.get_log_probs(ref_chosen_logits, chosen_labels)
+                    ref_rejected_logps = self.get_log_probs(ref_rejected_logits, rejected_labels)
+                
+                # Treat chosen and rejected as a group of size 2 per batch element
+                policy_group = torch.cat([policy_chosen_logps, policy_rejected_logps], dim=0)
+                ref_group = torch.cat([ref_chosen_logps, ref_rejected_logps], dim=0)
+                
+                rewards = torch.zeros_like(policy_group)
+                # Chosen response gets reward 1.0, rejected gets 0.0
+                rewards[:policy_chosen_logps.size(0)] = 1.0
+                
+                from picotron.rlhf.loss import compute_grpo_loss
+                loss = compute_grpo_loss(
+                    policy_group_logps=policy_group,
+                    ref_group_logps=ref_group,
+                    rewards=rewards,
+                    beta=self.beta
+                )
             else:
                 raise ValueError(f"Unsupported preference mode: {self.mode}")
 
