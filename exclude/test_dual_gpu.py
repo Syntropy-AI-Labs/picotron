@@ -17,7 +17,7 @@ from picotron.parallel.pipeline import send_forward, recv_forward
 from picotron.parallel.context import shard_context, gather_context
 from picotron.parallel.expert import dispatch_tokens_to_experts
 from picotron.nn.mixers import MLA, SelectiveSSM
-from picotron.nn.mlp import MoEMLP
+from picotron.nn.mlp import MoE
 from picotron.config import ModelConfig
 
 def run_distributed_tests(rank: int, world_size: int):
@@ -91,6 +91,11 @@ def run_distributed_tests(rank: int, world_size: int):
     
     routed_tokens = dispatch_tokens_to_experts(tokens, dispatch_idx, ep_group=None)
     assert routed_tokens.shape == (4, 8), "EP token dispatch shape mismatch!"
+    
+    # Verify local MoE Module execution
+    moe = MoE(hidden_size=8, intermediate_size=16, num_experts=4, top_k=2).to(device)
+    moe_out, _ = moe(tokens)
+    assert moe_out.shape == (4, 8), "MoE local block shape mismatch!"
     print(f"[Rank {rank}] MoE / EP test passed.")
 
     # =================================================================

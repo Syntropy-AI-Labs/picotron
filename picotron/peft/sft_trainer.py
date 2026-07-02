@@ -30,7 +30,7 @@ class SFTTrainer(Trainer):
             mb_x = mb_x.to(self.device, non_blocking=True)
             mb_y = mb_y.to(self.device, non_blocking=True)
             
-            with torch.cuda.amp.autocast(enabled=self.use_amp, dtype=self.amp_dtype):
+            with torch.amp.autocast('cuda', enabled=self.use_amp, dtype=self.amp_dtype):
                 logits, aux_loss = self.model(mb_x)
                 
                 # Reshape for cross entropy

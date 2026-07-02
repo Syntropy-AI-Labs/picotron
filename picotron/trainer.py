@@ -105,7 +105,7 @@ class Trainer:
             self.amp_dtype = torch.float32
             
         self.use_amp = self.amp_dtype in (torch.float16, torch.bfloat16)
-        self.scaler = torch.cuda.amp.GradScaler(enabled=(self.amp_dtype == torch.float16))
+        self.scaler = torch.amp.GradScaler('cuda', enabled=(self.amp_dtype == torch.float16))
         
         self.use_deepspeed = config.train.use_deepspeed
         if self.use_deepspeed:

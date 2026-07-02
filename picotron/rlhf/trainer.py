@@ -58,7 +58,7 @@ class PreferenceTrainer(Trainer):
         rejected_input = batch["rejected_input"].to(self.device)
         rejected_labels = batch["rejected_labels"].to(self.device)
         
-        with torch.cuda.amp.autocast(enabled=self.use_amp, dtype=self.amp_dtype):
+        with torch.amp.autocast('cuda', enabled=self.use_amp, dtype=self.amp_dtype):
             # 1. Forward passes through Policy model
             chosen_logits, _ = self.model(chosen_input)
             rejected_logits, _ = self.model(rejected_input)
