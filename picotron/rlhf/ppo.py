@@ -88,12 +88,12 @@ class PPORolloutBuffer:
 
     def get_batches(self) -> Dict[str, torch.Tensor]:
         return {
-            "queries": torch.stack(self.queries),
-            "responses": torch.stack(self.responses),
-            "logprobs": torch.stack(self.logprobs),
-            "values": torch.stack(self.values),
-            "rewards": torch.stack(self.rewards),
-            "masks": torch.stack(self.masks),
+            "queries": torch.cat(self.queries, dim=0),
+            "responses": torch.cat(self.responses, dim=0),
+            "logprobs": torch.cat(self.logprobs, dim=0),
+            "values": torch.cat(self.values, dim=0),
+            "rewards": torch.cat(self.rewards, dim=0),
+            "masks": torch.cat(self.masks, dim=0),
         }
 
 # =====================================================================
